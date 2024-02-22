@@ -1,10 +1,13 @@
 package moneymakerrabbit
 
 import (
+	"context"
+	json2 "encoding/json"
 	"fmt"
 	"github.com/rabbitmq/amqp091-go"
 	"log"
 	"os"
+	"time"
 )
 
 type Configuration struct {
@@ -18,6 +21,7 @@ type Configuration struct {
 type Connection struct {
 	Connection *amqp091.Connection
 }
+// TODO: create an interface for the connection type that has the functions such as Connect from below added
 
 type MessageHandlerFunc func(msg *amqp091.Delivery)
 
@@ -91,6 +95,35 @@ func (conn *Connection) ReceiveMessages(queueName string, handler MessageHandler
 
 	log.Printf(" [*] Waiting for messages from queue %s\n", queueName)
 	<-forever
+}
+
+func (conn *Connection) SendMessage(body interface{}, headers map[string]interface{}, contentType string, queue string) {
+
+	channel := openChannel(conn.Connection)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	json, err := json2.Marshal(body)
+	if err != nil {
+		failOnError(err, "unable to marshal body to json")
+	}
+
+	err = channel.PublishWithContext(
+		ctx,
+		"",
+		queue,
+		false,
+		false,
+		amqp091.Publishing{
+			ContentType: contentType,
+			Headers: headers,
+			Body:        json,
+		})
+	
+	if err != nil {
+		failOnError(err, "failed to send message")
+	}
 }
 
 func openChannel(conn *amqp091.Connection) *amqp091.Channel {
