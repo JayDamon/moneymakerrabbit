@@ -27,6 +27,7 @@ type Connector interface {
 	SendMessage(body interface{}, headers map[string]interface{}, contentType string, queue string, exchange string) error
 	Close()
 	DeclareExchange(exchangeName string)
+	DeclareQueue(queueName string) *amqp091.Queue
 }
 
 type MessageHandlerFunc func(msg *amqp091.Delivery)
@@ -168,6 +169,22 @@ func (conn *RabbitConnector) DeclareExchange(exchangeName string) {
 		log.Panicf("Failed to Declare Exchange with name %s: %s", exchangeName, err)
 	}
 
+}
+
+func (conn *RabbitConnector) DeclareQueue(queueName string) *amqp091.Queue {
+	ch := openChannel(conn.Connection)
+	defer ch.Close()
+
+	q, err := ch.QueueDeclare(
+		queueName, // name
+		false,     // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		nil,       // arguments
+	)
+	failOnError(err, "Failed to declare a queue")
+	return &q
 }
 
 func openChannel(conn *amqp091.Connection) *amqp091.Channel {
