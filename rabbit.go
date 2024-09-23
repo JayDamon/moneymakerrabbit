@@ -18,10 +18,16 @@ type Configuration struct {
 	ConnectionPrefix string
 }
 
-type Connection struct {
+type RabbitConnector struct {
 	Connection *amqp091.Connection
 }
-// TODO: create an interface for the connection type that has the functions such as Connect from below added
+
+type Connector interface {
+	ReceiveMessages(queueName string, handler MessageHandlerFunc)
+	SendMessage(body interface{}, headers map[string]interface{}, contentType string, queue string, exchange string) error
+	Close()
+	DeclareExchange(exchangeName string)
+}
 
 type MessageHandlerFunc func(msg *amqp091.Delivery)
 
@@ -41,7 +47,7 @@ func NewConfiguration() *Configuration {
 	}
 }
 
-func (config *Configuration) Connect() *Connection {
+func (config *Configuration) Connect() Connector {
 
 	url := fmt.Sprintf("amqp://%s:%s@%s:%s/", config.Username, config.Password, config.Host, config.Port)
 
@@ -53,18 +59,18 @@ func (config *Configuration) Connect() *Connection {
 		log.Panicf("%s: %s", "Failed to connect to RabbitMQ", err)
 	}
 
-	return &Connection{
+	return &RabbitConnector{
 		Connection: conn,
 	}
 }
 
 // ReceiveMessages should be declared as a goroutine to ensure it does not block application startup
-func (conn *Connection) ReceiveMessages(queueName string, handler MessageHandlerFunc) {
+func (conn *RabbitConnector) ReceiveMessages(queueName string, handler MessageHandlerFunc) {
 
 	ch := openChannel(conn.Connection)
 	defer ch.Close()
 
-	_, err := ch.QueueDeclare(
+	q, err := ch.QueueDeclare(
 		queueName, // name
 		false,     // durable
 		false,     // delete when unused
@@ -75,13 +81,13 @@ func (conn *Connection) ReceiveMessages(queueName string, handler MessageHandler
 	failOnError(err, "Failed to declare a queue")
 
 	msgs, err := ch.Consume(
-		queueName, // queue
-		"",        // consumer
-		true,      // auto-ack
-		false,     // exclusive
-		false,     // no-local
-		false,     // no-wait
-		nil,       // args
+		q.Name, // queue
+		"",     // consumer
+		true,   // auto-ack
+		false,  // exclusive
+		false,  // no-local
+		false,  // no-wait
+		nil,    // args
 	)
 	failOnError(err, "Failed to register a consumer")
 
@@ -97,9 +103,18 @@ func (conn *Connection) ReceiveMessages(queueName string, handler MessageHandler
 	<-forever
 }
 
-func (conn *Connection) SendMessage(body interface{}, headers map[string]interface{}, contentType string, queue string) {
+// SendMessage should only take a queue or an exchange, not both
+func (conn *RabbitConnector) SendMessage(body interface{}, headers map[string]interface{}, contentType string, queue string, exchange string) error {
 
-	channel := openChannel(conn.Connection)
+	if queue != "" && exchange != "" {
+		return fmt.Errorf("exchange and queue name cannot both be provided, one must be an empty string")
+	}
+
+	if queue == "" && exchange == "" {
+		return fmt.Errorf("either a valid queue or exchange name must be provided, but were empty strings")
+	}
+
+	ch := openChannel(conn.Connection)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -109,21 +124,50 @@ func (conn *Connection) SendMessage(body interface{}, headers map[string]interfa
 		failOnError(err, "unable to marshal body to json")
 	}
 
-	err = channel.PublishWithContext(
+	err = ch.PublishWithContext(
 		ctx,
-		"",
+		exchange,
 		queue,
 		false,
 		false,
 		amqp091.Publishing{
 			ContentType: contentType,
-			Headers: headers,
+			Headers:     headers,
 			Body:        json,
 		})
-	
+
 	if err != nil {
-		failOnError(err, "failed to send message")
+		return err
 	}
+
+	return nil
+}
+
+func (conn *RabbitConnector) Close() {
+	err := conn.Connection.Close()
+	if err != nil {
+		log.Panicf("%s: %s", "Failed to close a channel", err)
+	}
+}
+
+func (conn *RabbitConnector) DeclareExchange(exchangeName string) {
+	ch := openChannel(conn.Connection)
+	defer ch.Close()
+
+	err := ch.ExchangeDeclare(
+		exchangeName, // name
+		"fanout",     // type
+		true,         // durable
+		false,        // auto-deleted
+		false,        // internal
+		false,        // no-wait
+		nil,          // arguments
+	)
+
+	if err != nil {
+		log.Panicf("Failed to Declare Exchange with name %s: %s", exchangeName, err)
+	}
+
 }
 
 func openChannel(conn *amqp091.Connection) *amqp091.Channel {
