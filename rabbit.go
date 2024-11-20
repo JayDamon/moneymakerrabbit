@@ -28,6 +28,7 @@ type Connector interface {
 	Close()
 	DeclareExchange(exchangeName string)
 	DeclareQueue(queueName string) *amqp091.Queue
+	ReceiveMessagesFromExchange(exchangeName string, handler MessageHandlerFunc)
 }
 
 type MessageHandlerFunc func(msg *amqp091.Delivery)
@@ -185,6 +186,64 @@ func (conn *RabbitConnector) DeclareQueue(queueName string) *amqp091.Queue {
 	)
 	failOnError(err, "Failed to declare a queue")
 	return &q
+}
+
+func (conn *RabbitConnector) ReceiveMessagesFromExchange(exchangeName string, handler MessageHandlerFunc) {
+
+	ch := openChannel(conn.Connection)
+	defer ch.Close()
+
+	err := ch.ExchangeDeclare(
+		exchangeName, // name
+		"fanout",     // type
+		true,         // durable
+		false,        // auto-deleted
+		false,        // internal
+		false,        // no-wait
+		nil,          // arguments
+	)
+	failOnError(err, fmt.Sprintf("Failed to Declare Exchange with name %s: %s", exchangeName, err))
+
+	q, err := ch.QueueDeclare(
+		"", // name
+		false,     // durable
+		false,     // delete when unused
+		true,     // exclusive
+		false,     // no-wait
+		nil,       // arguments
+	)
+	failOnError(err, "Failed to declare a queue")
+
+	err = ch.QueueBind(
+		q.Name,
+		"",
+		exchangeName,
+		false,
+		nil,
+		)
+	failOnError(err, "Unable to bind queue to exchange")
+
+	msgs, err := ch.Consume(
+		q.Name,
+		"",
+		true,
+		false,
+		false,
+		false,
+		nil,
+		)
+	failOnError(err, "Failed to register a consumer")
+
+	var forever chan struct{}
+
+	go func() {
+		for d := range msgs {
+			handler(&d)
+		}
+	}()
+
+	log.Printf(" [*] Waiting for messages from exchange %s\n", exchangeName)
+	<-forever
 }
 
 func openChannel(conn *amqp091.Connection) *amqp091.Channel {
