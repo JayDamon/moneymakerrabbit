@@ -28,7 +28,7 @@ type Connector interface {
 	Close()
 	DeclareExchange(exchangeName string)
 	DeclareQueue(queueName string) *amqp091.Queue
-	ReceiveMessagesFromExchange(exchangeName string, handler MessageHandlerFunc)
+	ReceiveMessagesFromExchange(exchangeName string, consumingQueueName string, handler MessageHandlerFunc)
 }
 
 type MessageHandlerFunc func(msg *amqp091.Delivery)
@@ -72,13 +72,17 @@ func (conn *RabbitConnector) ReceiveMessages(queueName string, handler MessageHa
 	ch := openChannel(conn.Connection)
 	defer ch.Close()
 
+	args := amqp091.Table{}
+	args["x-message-ttl"] = 60000
+	args["x-dead-letter-exchange"] = queueName + "-dlx"
+
 	q, err := ch.QueueDeclare(
 		queueName, // name
 		false,     // durable
 		false,     // delete when unused
 		false,     // exclusive
 		false,     // no-wait
-		nil,       // arguments
+		args,      // arguments
 	)
 	failOnError(err, "Failed to declare a queue")
 
@@ -176,19 +180,23 @@ func (conn *RabbitConnector) DeclareQueue(queueName string) *amqp091.Queue {
 	ch := openChannel(conn.Connection)
 	defer ch.Close()
 
+	args := amqp091.Table{}
+	args["x-message-ttl"] = 60000
+	args["x-dead-letter-exchange"] = queueName + "-dlx"
+
 	q, err := ch.QueueDeclare(
 		queueName, // name
 		false,     // durable
 		false,     // delete when unused
 		false,     // exclusive
 		false,     // no-wait
-		nil,       // arguments
+		args,      // arguments
 	)
 	failOnError(err, "Failed to declare a queue")
 	return &q
 }
 
-func (conn *RabbitConnector) ReceiveMessagesFromExchange(exchangeName string, handler MessageHandlerFunc) {
+func (conn *RabbitConnector) ReceiveMessagesFromExchange(exchangeName string, consumingQueueName string, handler MessageHandlerFunc) {
 
 	ch := openChannel(conn.Connection)
 	defer ch.Close()
@@ -204,13 +212,17 @@ func (conn *RabbitConnector) ReceiveMessagesFromExchange(exchangeName string, ha
 	)
 	failOnError(err, fmt.Sprintf("Failed to Declare Exchange with name %s: %s", exchangeName, err))
 
+	args := amqp091.Table{}
+	args["x-message-ttl"] = 60000
+	args["x-dead-letter-exchange"] = consumingQueueName + "-dlx"
+
 	q, err := ch.QueueDeclare(
-		"", // name
-		false,     // durable
-		false,     // delete when unused
-		true,     // exclusive
-		false,     // no-wait
-		nil,       // arguments
+		consumingQueueName, // name
+		false,              // durable
+		false,              // delete when unused
+		true,               // exclusive
+		false,              // no-wait
+		args,               // arguments
 	)
 	failOnError(err, "Failed to declare a queue")
 
@@ -220,7 +232,7 @@ func (conn *RabbitConnector) ReceiveMessagesFromExchange(exchangeName string, ha
 		exchangeName,
 		false,
 		nil,
-		)
+	)
 	failOnError(err, "Unable to bind queue to exchange")
 
 	msgs, err := ch.Consume(
@@ -231,7 +243,7 @@ func (conn *RabbitConnector) ReceiveMessagesFromExchange(exchangeName string, ha
 		false,
 		false,
 		nil,
-		)
+	)
 	failOnError(err, "Failed to register a consumer")
 
 	var forever chan struct{}
