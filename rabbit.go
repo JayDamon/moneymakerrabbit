@@ -31,7 +31,7 @@ type Connector interface {
 	ReceiveMessagesFromExchange(exchangeName string, consumingQueueName string, handler MessageHandlerFunc)
 }
 
-type MessageHandlerFunc func(msg *amqp091.Delivery)
+type MessageHandlerFunc func(msg *amqp091.Delivery) error
 
 func NewConfiguration() *Configuration {
 	host := getOrDefault("RABBITMQ_HOST", "localhost")
@@ -121,6 +121,7 @@ func (conn *RabbitConnector) SendMessage(body interface{}, headers map[string]in
 	}
 
 	ch := openChannel(conn.Connection)
+	defer ch.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -250,7 +251,12 @@ func (conn *RabbitConnector) ReceiveMessagesFromExchange(exchangeName string, co
 
 	go func() {
 		for d := range msgs {
-			handler(&d)
+			err = handler(&d)
+			if err != nil {
+				log.Printf("failed to process message, adding to dlq\n    msg: %v\n    err: %s", d, err)
+				err = ch.Reject(d.DeliveryTag, false)
+				log.Printf("failed to reject delivery tag %d\n    msg %v\n    err: %s", d.DeliveryTag, d, err)
+			}
 		}
 	}()
 
